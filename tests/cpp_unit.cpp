@@ -2,6 +2,7 @@
 * The purpose of this test is to check that we can call CRoaring from C++
 */
 
+#include <type_traits>
 #include <assert.h>
 #include <roaring/roaring.h>
 #include <stdio.h>
@@ -15,6 +16,9 @@ extern "C" {
 #include "test.h"
 }
 
+
+static_assert(std::is_nothrow_move_constructible<Roaring>::value,
+        "Expected Roaring to be no except move constructable");
 
 bool roaring_iterator_sumall(uint32_t value, void *param) {
     *(uint32_t *)param += value;
@@ -46,7 +50,7 @@ void serial_test(void **) {
 void test_example(bool copy_on_write) {
     // create a new empty bitmap
     roaring_bitmap_t *r1 = roaring_bitmap_create();
-    r1->copy_on_write = copy_on_write;
+    roaring_bitmap_set_copy_on_write(r1, copy_on_write);
     assert_ptr_not_equal(r1, NULL);
 
     // then we can add values
@@ -76,7 +80,7 @@ void test_example(bool copy_on_write) {
     // we can also create a bitmap from a pointer to 32-bit integers
     const uint32_t values[] = {2, 3, 4};
     roaring_bitmap_t *r3 = roaring_bitmap_of_ptr(3, values);
-    r3->copy_on_write = copy_on_write;
+    roaring_bitmap_set_copy_on_write(r3, copy_on_write);
     // we can also go in reverse and go from arrays to bitmaps
     uint64_t card1 = roaring_bitmap_get_cardinality(r1);
     uint32_t *arr1 = new uint32_t[card1];
@@ -93,14 +97,14 @@ void test_example(bool copy_on_write) {
 
     // we can copy and compare bitmaps
     roaring_bitmap_t *z = roaring_bitmap_copy(r3);
-    z->copy_on_write = copy_on_write;
+    roaring_bitmap_set_copy_on_write(z, copy_on_write);
     assert_true(roaring_bitmap_equals(r3, z));
 
     roaring_bitmap_free(z);
 
     // we can compute union two-by-two
     roaring_bitmap_t *r1_2_3 = roaring_bitmap_or(r1, r2);
-    r1_2_3->copy_on_write = copy_on_write;
+    roaring_bitmap_set_copy_on_write(r1_2_3, copy_on_write);
     roaring_bitmap_or_inplace(r1_2_3, r3);
 
     // we can compute a big union
@@ -301,6 +305,43 @@ void test_example_cpp(bool copy_on_write) {
     }
 }
 
+void test_run_compression_cpp(bool copy_on_write) {
+  Roaring r1;
+  r1.setCopyOnWrite(copy_on_write);
+  for (uint32_t i = 100; i <= 10000; i++) {
+    r1.add(i);
+  }
+  uint64_t size_origin = r1.getSizeInBytes();
+  bool has_run = r1.runOptimize();
+  uint64_t size_optimized = r1.getSizeInBytes();
+  assert_true(has_run);
+  assert_true(size_origin > size_optimized);
+  bool removed = r1.removeRunCompression();
+  assert_true(removed);
+  uint64_t size_removed = r1.getSizeInBytes();
+  assert_true(size_removed > size_optimized);
+  return;
+}
+
+
+void test_run_compression_cpp_64(bool copy_on_write) {
+  Roaring64Map r1;
+  r1.setCopyOnWrite(copy_on_write);
+  for (uint64_t i = 100; i <= 10000; i++) {
+    r1.add(i);
+  }
+  uint64_t size_origin = r1.getSizeInBytes();
+  bool has_run = r1.runOptimize();
+  uint64_t size_optimized = r1.getSizeInBytes();
+  assert_true(has_run);
+  assert_true(size_origin > size_optimized);
+  bool removed = r1.removeRunCompression();
+  assert_true(removed);
+  uint64_t size_removed = r1.getSizeInBytes();
+  assert_true(size_removed > size_optimized);
+  return;
+}
+
 void test_example_cpp_64(bool copy_on_write) {
     // create a new empty bitmap
     Roaring64Map r1;
@@ -445,6 +486,14 @@ void test_example_cpp_64_true(void **) { test_example_cpp_64(true); }
 
 void test_example_cpp_64_false(void **) { test_example_cpp_64(false); }
 
+void test_run_compression_cpp_64_true(void **) { test_run_compression_cpp_64(true); }
+
+void test_run_compression_cpp_64_false(void **) { test_run_compression_cpp_64(false); }
+
+void test_run_compression_cpp_true(void **) { test_run_compression_cpp(true); }
+
+void test_run_compression_cpp_false(void **) { test_run_compression_cpp(false); }
+
 void test_cpp_add_remove_checked(void **) {
     Roaring roaring;
     uint32_t values[4] = { 123, 9999, 0xFFFFFFF7, 0xFFFFFFFF};
@@ -484,6 +533,64 @@ void test_cpp_add_remove_checked_64(void **) {
     assert_true(roaring.isEmpty());
 }
 
+void test_cpp_clear_64(void **) {
+    Roaring64Map roaring;
+
+    uint64_t values64[4] = { 123ULL, 0xA00000000AULL, 0xAFFFFFFF7ULL, 0xFFFFFFFFFULL};
+    for (int i = 0; i < 4; ++i) {
+        assert_true(roaring.addChecked(values64[i]));
+    }
+
+	roaring.clear();
+	
+    assert_true(roaring.isEmpty());
+}
+
+void test_cpp_move_64(void **) {
+    Roaring64Map roaring;
+
+    uint64_t values64[4] = { 123ULL, 0xA00000000AULL, 0xAFFFFFFF7ULL, 0xFFFFFFFFFULL};
+    for (int i = 0; i < 4; ++i) {
+        assert_true(roaring.addChecked(values64[i]));
+    }
+
+	Roaring64Map::const_iterator i(roaring);
+	i.move(123ULL);
+	assert_true(*i == 123ULL);
+	i.move(0xAFFFFFFF8ULL);
+	assert_true(*i == 0xFFFFFFFFFULL);
+	assert_false(i.move(0xFFFFFFFFFFULL));
+}
+
+void test_cpp_bidirectional_iterator_64(void **) {
+    Roaring64Map roaring;
+
+    uint64_t values64[4] = { 123ULL, 0xA00000000AULL, 0xAFFFFFFF7ULL, 0xFFFFFFFFFULL};
+    for (int i = 0; i < 4; ++i) {
+        assert_true(roaring.addChecked(values64[i]));
+    }
+
+	Roaring64Map::const_bidirectional_iterator i(roaring);
+	i = roaring.begin();
+	assert_true(*i++ == 123ULL);
+	assert_true(*i++ == 0xAFFFFFFF7ULL);
+	assert_true(*i++ == 0xFFFFFFFFFULL);
+	assert_true(*i++ == 0xA00000000AULL);
+	assert_true(i == roaring.end());
+	assert_true(*--i == 0xA00000000AULL);	
+	assert_true(*--i == 0xFFFFFFFFFULL);
+	assert_true(*--i == 0xAFFFFFFF7ULL);
+	assert_true(*--i == 123ULL);
+	assert_true(i == roaring.begin());
+	i = roaring.end();
+	i--;
+	assert_true(*i-- == 0xA00000000AULL);
+	assert_true(*i-- == 0xFFFFFFFFFULL);
+	assert_true(*i-- == 0xAFFFFFFF7ULL);
+	assert_true(*i == 123ULL);
+	assert_true(i == roaring.begin());
+}
+
 int main() {
     const struct CMUnitTest tests[] = {
         cmocka_unit_test(serial_test),
@@ -494,7 +601,14 @@ int main() {
         cmocka_unit_test(test_example_cpp_64_true),
         cmocka_unit_test(test_example_cpp_64_false),
         cmocka_unit_test(test_cpp_add_remove_checked),
-        cmocka_unit_test(test_cpp_add_remove_checked_64)};
+        cmocka_unit_test(test_cpp_add_remove_checked_64),
+        cmocka_unit_test(test_run_compression_cpp_64_true),
+        cmocka_unit_test(test_run_compression_cpp_64_false),
+        cmocka_unit_test(test_run_compression_cpp_true),
+        cmocka_unit_test(test_run_compression_cpp_false),
+		cmocka_unit_test(test_cpp_clear_64),
+		cmocka_unit_test(test_cpp_move_64),
+		cmocka_unit_test(test_cpp_bidirectional_iterator_64)};
 
     return cmocka_run_group_tests(tests, NULL, NULL);
 }

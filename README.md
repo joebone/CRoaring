@@ -1,4 +1,4 @@
-# CRoaring [![Build Status](https://travis-ci.org/RoaringBitmap/CRoaring.png)](https://travis-ci.org/RoaringBitmap/CRoaring)   [![Build Status](https://img.shields.io/appveyor/ci/lemire/croaring.svg)](https://ci.appveyor.com/project/lemire/croaring)
+# CRoaring [![Build Status](https://travis-ci.org/RoaringBitmap/CRoaring.svg)](https://travis-ci.org/RoaringBitmap/CRoaring)   [![Build Status](https://img.shields.io/appveyor/ci/lemire/croaring.svg)](https://ci.appveyor.com/project/lemire/croaring) [![Build Status](https://cloud.drone.io/api/badges/RoaringBitmap/CRoaring/status.svg)](https://cloud.drone.io/RoaringBitmap/CRoaring)
 Portable Roaring bitmaps in C (and C++) with full support for your favorite compiler (GNU GCC, LLVM's clang, Visual Studio). Included in the [Awesome C](https://github.com/kozross/awesome-c) list of open source C software.
 
 # Introduction
@@ -8,7 +8,7 @@ Bitsets, also called bitmaps, are commonly used as fast data structures. Unfortu
 
 Roaring bitmaps are compressed bitmaps which tend to outperform conventional compressed bitmaps such as WAH, EWAH or Concise.
 They are used by several major systems such as [Apache Lucene][lucene] and derivative systems such as [Solr][solr] and
-[Elasticsearch][elasticsearch], [Metamarkets' Druid][druid], [LinkedIn Pinot][pinot], [Netflix Atlas][atlas],  [Apache Spark][spark], [OpenSearchServer][opensearchserver], [Cloud Torrent][cloudtorrent], [Whoosh][whoosh], [InfluxDB](https://www.influxdata.com), [Pilosa][pilosa], [Bleve](http://www.blevesearch.com), [Microsoft Visual Studio Team Services (VSTS)][vsts], and eBay's [Apache Kylin][kylin].
+[Elasticsearch][elasticsearch], [Metamarkets' Druid][druid], [LinkedIn Pinot][pinot], [Netflix Atlas][atlas],  [Apache Spark][spark], [OpenSearchServer][opensearchserver], [Cloud Torrent][cloudtorrent], [Whoosh][whoosh], [InfluxDB](https://www.influxdata.com), [Pilosa][pilosa], [Bleve](http://www.blevesearch.com), [Microsoft Visual Studio Team Services (VSTS)][vsts], and eBay's [Apache Kylin][kylin]. The CRoaring library is used in several systems such as [Apache Doris](http://doris.incubator.apache.org). The YouTube SQL Engine, [Google Procella](https://research.google/pubs/pub48388/), uses Roaring bitmaps for indexing.
 
 We published a peer-reviewed article on the design and evaluation of this library:
 
@@ -81,7 +81,7 @@ it from any directory where you want the amalgamation files to be written.
 It will generate three files for C users: ``roaring.h``, ``roaring.c`` and ``amalgamation_demo.c``... as well as some brief instructions. The ``amalgamation_demo.c`` file is a short example, whereas ``roaring.h`` and ``roaring.c`` are "amalgamated" files (including all source and header files for the project). This means that you can simply copy the files ``roaring.h`` and ``roaring.c`` into your project and be ready to go! No need to produce a library! See the ``amalgamation_demo.c`` file.
 
 For example, you can use the C code as follows:
-```
+```C++
 #include <stdio.h>
 #include "roaring.c"
 int main() {
@@ -95,7 +95,7 @@ int main() {
 
 The script will also generate C++ files for C++ users, including an example. You can use the C++ as follows.
 
-```
+```C++
 #include <iostream>
 #include "roaring.hh"
 #include "roaring.c"
@@ -123,7 +123,11 @@ If you prefer a silent output, you can use the following command to redirect ``s
 
 # API
 
-The interface is found in the file ``include/roaring/roaring.h``.
+The C interface is found in the file ``include/roaring/roaring.h``. We have C++ interface at `cpp/roaring.hh`.
+
+# Dealing with large volumes
+
+Some users have to deal with large volumes of data. It  may be important for these users to be aware of the `addMany` (C++) `roaring_bitmap_or_many` (C) functions as it is much faster and economical to add values in batches when possible. Furthermore, calling periodically the `runOptimize` (C++) or `roaring_bitmap_run_optimize` (C) functions may help.
 
 # Example (C)
 
@@ -167,6 +171,14 @@ roaring_bitmap_t *r1f = roaring_bitmap_of_ptr(card1, arr1);
 free(arr1);
 assert(roaring_bitmap_equals(r1, r1f));  // what we recover is equal
 roaring_bitmap_free(r1f);
+
+// we can go from arrays to bitmaps from "offset" by "limit"
+size_t offset = 100;
+size_t limit = 1000;
+uint32_t *arr3 = (uint32_t *)malloc(limit * sizeof(uint32_t));
+assert(arr3 != NULL);
+roaring_bitmap_range_uint32_array(r1, offset, limit, arr3);
+free(arr3)
 
 // we can copy and compare bitmaps
 roaring_bitmap_t *z = roaring_bitmap_copy(r3);
@@ -373,8 +385,7 @@ make
 # whereas C++ header files get installed to /usr/local/include/roaring
 ```
 (You can replace the ``build`` directory with any other directory name.)
-
-By default, on all platforms, we build a dynamic library. You can generate a static library by adding ``-DROARING_BUILD_STATIC=ON`` to the command line.
+You can generate a static library by adding ``-DROARING_BUILD_STATIC=ON`` to the command line.
 By default all tests are built on all platforms, to skip building and running tests add `` -DENABLE_ROARING_TESTS=OFF `` to the command line.
 
 As with all ``cmake`` projects, you can specify the compilers you wish to use by adding (for example) ``-DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++`` to the ``cmake`` command line.
@@ -527,6 +538,36 @@ You must understand that this implies that the produced binaries will not run on
 We have additionnal optimizations that use inline assembly. However, Visual Studio does not support inline assembly so you cannot benefit from these optimizations under Visual Studio.
 
 
+## Usage (Using `vcpkg` on Windows, Linux and macOS)
+
+[vcpkg](https://github.com/Microsoft/vcpkg) users on Windows, Linux and macOS can download and install `roaring` with one single command from their favorite shell.
+
+On Linux and macOS:
+
+```
+$ ./vcpkg install roaring
+```
+
+will build and install `roaring` as a static library.
+
+On Windows (64-bit):
+
+```
+.\vcpkg.exe install roaring:x64-windows
+```
+
+will build and install `roaring` as a shared library.
+
+```
+.\vcpkg.exe install roaring:x64-windows-static  
+```
+
+will build and install `roaring` as a static library.
+
+These commands will also print out instructions on how to use the library from MSBuild or CMake-based projects.
+
+If you find the version of `roaring` shipped with `vcpkg` is out-of-date, feel free to report it to `vcpkg` community either by submiting an issue or by creating a PR.
+
 # AVX2-related throttling
 
 Our AVX2 code does not use floating-point numbers or multiplications, so it is not subject to turbo frequency throttling on many-core Intel processors.
@@ -535,6 +576,36 @@ Our AVX2 code does not use floating-point numbers or multiplications, so it is n
 
 Like, for example, STL containers or Java's default data structures, the CRoaring library has no built-in thread support. Thus whenever you modify a bitmap in one thread, it is unsafe to query it in others. It is safe however to query bitmaps (without modifying them) from several distinct threads,  as long as you do not use the copy-on-write attribute. For example, you can safely copy a bitmap and use both copies in concurrently. One should probably avoid the use of the copy-on-write attribute in a threaded environment.
 
+
+# How to best aggregate bitmaps?
+
+Suppose you want to compute the union (OR) of many bitmaps. How do you proceed? There are many
+different strategies.
+
+You can use `roaring_bitmap_or_many(bitmapcount, bitmaps)` or `roaring_bitmap_or_many_heap(bitmapcount, bitmaps)` or you may
+even roll your own aggregation:
+
+```
+roaring_bitmap_t *answer  = roaring_bitmap_copy(bitmaps[0]);
+for (size_t i = 1; i < bitmapcount; i++) {
+  roaring_bitmap_or_inplace(answer, bitmaps[i]);
+}
+```
+
+All of them will work but they have different performance characteristics. The `roaring_bitmap_or_many_heap` should
+probably only be used if, after benchmarking, you find that it is faster by a good margin: it uses more memory.
+
+The `roaring_bitmap_or_many` is meant as a good default. It works by trying to delay work as much as possible.
+However, because it delays computations, it also does not optimize the format as the computation runs. It might
+thus fail to see some useful pattern in the data such as long consecutive values.
+
+The approach based on repeated calls to `roaring_bitmap_or_inplace`
+is also fine, and might even be faster in some cases. You can expect it to be faster if, after
+a few calls, you get long sequences of consecutive values in the answer. That is, if the
+final answer is all integers in the range [0,1000000), and this is apparent quickly, then the
+later `roaring_bitmap_or_inplace` will be very fast.
+
+You should benchmark these alternatives on your own data to decide what is best.
 
 # Python Wrapper
 
@@ -554,6 +625,9 @@ Installing it is as easy as typing...
 npm install roaring
 ```
 
+# Swift Wrapper
+
+Jérémie Piotte wrote a [Swift wrapper](https://github.com/RoaringBitmap/SwiftRoaring).
 
 
 # C# Wrapper

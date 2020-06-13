@@ -4,6 +4,7 @@
 #ifndef BENCHMARKS_INCLUDE_BENCHMARK_H_
 #define BENCHMARKS_INCLUDE_BENCHMARK_H_
 #include <roaring/portability.h>
+#include <time.h>
 
 #ifdef ROARING_INLINE_ASM
 #define CLOBBER_MEMORY __asm volatile("" ::: /* pretend to clobber */ "memory")
@@ -35,6 +36,53 @@
             : "=r"(cyc_high), "=r"(cyc_low)::"%rax", "%rbx", "%rcx", "%rdx"); \
         (cycles) = ((uint64_t)cyc_high << 32) | cyc_low;                      \
     } while (0)
+
+#elif defined(__linux__) && defined(__GLIBC__)
+
+#include <time.h>
+#ifdef CLOCK_THREAD_CPUTIME_ID
+#define RDTSC_START(cycles) \
+  do { \
+    struct timespec ts; \
+    clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts); \
+    cycles = ts.tv_sec * UINT64_C(1000000000) + ts.tv_nsec; \
+  } while (0)
+
+#define RDTSC_FINAL(cycles) \
+  do { \
+    struct timespec ts; \
+    clock_gettime(CLOCK_REALTIME, &ts); \
+    cycles = ts.tv_sec * UINT64_C(1000000000) + ts.tv_nsec; \
+  } while (0)
+
+#elif defined(CLOCK_REALTIME)  // #ifdef CLOCK_THREAD_CPUTIME_ID
+#define RDTSC_START(cycles) \
+  do { \
+    struct timespec ts; \
+    clock_gettime(CLOCK_REALTIME, &ts); \
+    cycles = ts.tv_sec * UINT64_C(1000000000) + ts.tv_nsec; \
+  } while (0)
+
+#define RDTSC_FINAL(cycles) \
+  do { \
+    struct timespec ts; \
+    clock_gettime(CLOCK_REALTIME, &ts); \
+    cycles = ts.tv_sec * UINT64_C(1000000000) + ts.tv_nsec; \
+  } while (0)
+
+#else
+#define RDTSC_START(cycles) \
+  do { \
+    cycles = clock(); \
+  } while(0)
+
+#define RDTSC_FINAL(cycles) \
+  do { \
+    cycles = clock(); \
+  } while(0)
+
+#endif // #ifdef CLOCK_THREAD_CPUTIME_ID
+
 #else
 
 /**

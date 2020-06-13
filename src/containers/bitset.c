@@ -15,15 +15,15 @@
 #include <roaring/portability.h>
 #include <roaring/utilasm.h>
 
-extern int bitset_container_cardinality(const bitset_container_t *bitset);
-extern bool bitset_container_nonzero_cardinality(bitset_container_t *bitset);
-extern void bitset_container_set(bitset_container_t *bitset, uint16_t pos);
-extern void bitset_container_unset(bitset_container_t *bitset, uint16_t pos);
+extern inline int bitset_container_cardinality(const bitset_container_t *bitset);
+extern inline bool bitset_container_nonzero_cardinality(bitset_container_t *bitset);
+extern inline void bitset_container_set(bitset_container_t *bitset, uint16_t pos);
+extern inline void bitset_container_unset(bitset_container_t *bitset, uint16_t pos);
 extern inline bool bitset_container_get(const bitset_container_t *bitset,
                                         uint16_t pos);
-extern int32_t bitset_container_serialized_size_in_bytes();
-extern bool bitset_container_add(bitset_container_t *bitset, uint16_t pos);
-extern bool bitset_container_remove(bitset_container_t *bitset, uint16_t pos);
+extern inline int32_t bitset_container_serialized_size_in_bytes(void);
+extern inline bool bitset_container_add(bitset_container_t *bitset, uint16_t pos);
+extern inline bool bitset_container_remove(bitset_container_t *bitset, uint16_t pos);
 extern inline bool bitset_container_contains(const bitset_container_t *bitset,
                                              uint16_t pos);
 
@@ -49,7 +49,7 @@ bitset_container_t *bitset_container_create(void) {
         return NULL;
     }
     // sizeof(__m256i) == 32
-    bitset->array = (uint64_t *)aligned_malloc(
+    bitset->array = (uint64_t *)roaring_bitmap_aligned_malloc(
         32, sizeof(uint64_t) * BITSET_CONTAINER_SIZE_IN_WORDS);
     if (!bitset->array) {
         free(bitset);
@@ -98,7 +98,7 @@ void bitset_container_add_from_range(bitset_container_t *bitset, uint32_t min,
 /* Free memory. */
 void bitset_container_free(bitset_container_t *bitset) {
     if(bitset->array != NULL) {// Jon Strabala reports that some tools complain otherwise
-      aligned_free(bitset->array);
+      roaring_bitmap_aligned_free(bitset->array);
       bitset->array = NULL; // pedantic
     }
     free(bitset);
@@ -113,7 +113,7 @@ bitset_container_t *bitset_container_clone(const bitset_container_t *src) {
         return NULL;
     }
     // sizeof(__m256i) == 32
-    bitset->array = (uint64_t *)aligned_malloc(
+    bitset->array = (uint64_t *)roaring_bitmap_aligned_malloc(
         32, sizeof(uint64_t) * BITSET_CONTAINER_SIZE_IN_WORDS);
     if (!bitset->array) {
         free(bitset);
@@ -155,6 +155,31 @@ int bitset_container_compute_cardinality(const bitset_container_t *bitset) {
         (const __m256i *)bitset->array,
         BITSET_CONTAINER_SIZE_IN_WORDS / (WORDS_IN_AVX2_REG));
 }
+
+#elif defined(USENEON)
+int bitset_container_compute_cardinality(const bitset_container_t *bitset) {
+    uint16x8_t n0 = vdupq_n_u16(0);
+    uint16x8_t n1 = vdupq_n_u16(0);
+    uint16x8_t n2 = vdupq_n_u16(0);
+    uint16x8_t n3 = vdupq_n_u16(0);
+    for (size_t i = 0; i < BITSET_CONTAINER_SIZE_IN_WORDS; i += 8) {
+        uint64x2_t c0 = vld1q_u64(&bitset->array[i + 0]);
+        n0 = vaddq_u16(n0, vpaddlq_u8(vcntq_u8(vreinterpretq_u8_u64(c0))));
+        uint64x2_t c1 = vld1q_u64(&bitset->array[i + 2]);
+        n1 = vaddq_u16(n1, vpaddlq_u8(vcntq_u8(vreinterpretq_u8_u64(c1))));
+        uint64x2_t c2 = vld1q_u64(&bitset->array[i + 4]);
+        n2 = vaddq_u16(n2, vpaddlq_u8(vcntq_u8(vreinterpretq_u8_u64(c2))));
+        uint64x2_t c3 = vld1q_u64(&bitset->array[i + 6]);
+        n3 = vaddq_u16(n3, vpaddlq_u8(vcntq_u8(vreinterpretq_u8_u64(c3))));
+    }
+    uint64x2_t n = vdupq_n_u64(0);
+    n = vaddq_u64(n, vpaddlq_u32(vpaddlq_u16(n0)));
+    n = vaddq_u64(n, vpaddlq_u32(vpaddlq_u16(n1)));
+    n = vaddq_u64(n, vpaddlq_u32(vpaddlq_u16(n2)));
+    n = vaddq_u64(n, vpaddlq_u32(vpaddlq_u16(n3)));
+    return vgetq_lane_u64(n, 0) + vgetq_lane_u64(n, 1);
+}
+
 #else
 
 /* Get the number of bits set (force computation) */
@@ -185,7 +210,7 @@ int bitset_container_compute_cardinality(const bitset_container_t *bitset) {
 /* Computes a binary operation (eg union) on bitset1 and bitset2 and write the
    result to bitsetout */
 // clang-format off
-#define BITSET_CONTAINER_FN(opname, opsymbol, avx_intrinsic)            \
+#define BITSET_CONTAINER_FN(opname, opsymbol, avx_intrinsic, neon_intrinsic)  \
 int bitset_container_##opname##_nocard(const bitset_container_t *src_1, \
                                        const bitset_container_t *src_2, \
                                        bitset_container_t *dst) {       \
@@ -257,11 +282,97 @@ int bitset_container_##opname##_justcard(const bitset_container_t *src_1, \
     		data1, BITSET_CONTAINER_SIZE_IN_WORDS / (WORDS_IN_AVX2_REG));\
 }
 
+#elif defined(USENEON)
 
+#define BITSET_CONTAINER_FN(opname, opsymbol, avx_intrinsic, neon_intrinsic)  \
+int bitset_container_##opname(const bitset_container_t *src_1,                \
+                              const bitset_container_t *src_2,                \
+                              bitset_container_t *dst) {                      \
+    const uint64_t * __restrict__ array_1 = src_1->array;                     \
+    const uint64_t * __restrict__ array_2 = src_2->array;                     \
+    uint64_t *out = dst->array;                                               \
+    uint16x8_t n0 = vdupq_n_u16(0);                                           \
+    uint16x8_t n1 = vdupq_n_u16(0);                                           \
+    uint16x8_t n2 = vdupq_n_u16(0);                                           \
+    uint16x8_t n3 = vdupq_n_u16(0);                                           \
+    for (size_t i = 0; i < BITSET_CONTAINER_SIZE_IN_WORDS; i += 8) {          \
+        uint64x2_t c0 = neon_intrinsic(vld1q_u64(&array_1[i + 0]),            \
+                                       vld1q_u64(&array_2[i + 0]));           \
+        n0 = vaddq_u16(n0, vpaddlq_u8(vcntq_u8(vreinterpretq_u8_u64(c0))));   \
+        vst1q_u64(&out[i + 0], c0);                                           \
+        uint64x2_t c1 = neon_intrinsic(vld1q_u64(&array_1[i + 2]),            \
+                                       vld1q_u64(&array_2[i + 2]));           \
+        n1 = vaddq_u16(n1, vpaddlq_u8(vcntq_u8(vreinterpretq_u8_u64(c1))));   \
+        vst1q_u64(&out[i + 2], c1);                                           \
+        uint64x2_t c2 = neon_intrinsic(vld1q_u64(&array_1[i + 4]),            \
+                                       vld1q_u64(&array_2[i + 4]));           \
+        n2 = vaddq_u16(n2, vpaddlq_u8(vcntq_u8(vreinterpretq_u8_u64(c2))));   \
+        vst1q_u64(&out[i + 4], c2);                                           \
+        uint64x2_t c3 = neon_intrinsic(vld1q_u64(&array_1[i + 6]),            \
+                                       vld1q_u64(&array_2[i + 6]));           \
+        n3 = vaddq_u16(n3, vpaddlq_u8(vcntq_u8(vreinterpretq_u8_u64(c3))));   \
+        vst1q_u64(&out[i + 6], c3);                                           \
+    }                                                                         \
+    uint64x2_t n = vdupq_n_u64(0);                                            \
+    n = vaddq_u64(n, vpaddlq_u32(vpaddlq_u16(n0)));                           \
+    n = vaddq_u64(n, vpaddlq_u32(vpaddlq_u16(n1)));                           \
+    n = vaddq_u64(n, vpaddlq_u32(vpaddlq_u16(n2)));                           \
+    n = vaddq_u64(n, vpaddlq_u32(vpaddlq_u16(n3)));                           \
+    dst->cardinality = vgetq_lane_u64(n, 0) + vgetq_lane_u64(n, 1);           \
+    return dst->cardinality;                                                  \
+}                                                                             \
+int bitset_container_##opname##_nocard(const bitset_container_t *src_1,       \
+                                       const bitset_container_t *src_2,       \
+                                             bitset_container_t *dst) {       \
+    const uint64_t * __restrict__ array_1 = src_1->array;                     \
+    const uint64_t * __restrict__ array_2 = src_2->array;                     \
+    uint64_t *out = dst->array;                                               \
+    for (size_t i = 0; i < BITSET_CONTAINER_SIZE_IN_WORDS; i += 8) {          \
+        vst1q_u64(&out[i + 0], neon_intrinsic(vld1q_u64(&array_1[i + 0]),     \
+                                              vld1q_u64(&array_2[i + 0])));   \
+        vst1q_u64(&out[i + 2], neon_intrinsic(vld1q_u64(&array_1[i + 2]),     \
+                                              vld1q_u64(&array_2[i + 2])));   \
+        vst1q_u64(&out[i + 4], neon_intrinsic(vld1q_u64(&array_1[i + 4]),     \
+                                              vld1q_u64(&array_2[i + 4])));   \
+        vst1q_u64(&out[i + 6], neon_intrinsic(vld1q_u64(&array_1[i + 6]),     \
+                                              vld1q_u64(&array_2[i + 6])));   \
+    }                                                                         \
+    dst->cardinality = BITSET_UNKNOWN_CARDINALITY;                            \
+    return dst->cardinality;                                                  \
+}                                                                             \
+int bitset_container_##opname##_justcard(const bitset_container_t *src_1,     \
+                                         const bitset_container_t *src_2) {   \
+    const uint64_t * __restrict__ array_1 = src_1->array;                     \
+    const uint64_t * __restrict__ array_2 = src_2->array;                     \
+    uint16x8_t n0 = vdupq_n_u16(0);                                           \
+    uint16x8_t n1 = vdupq_n_u16(0);                                           \
+    uint16x8_t n2 = vdupq_n_u16(0);                                           \
+    uint16x8_t n3 = vdupq_n_u16(0);                                           \
+    for (size_t i = 0; i < BITSET_CONTAINER_SIZE_IN_WORDS; i += 8) {          \
+        uint64x2_t c0 = neon_intrinsic(vld1q_u64(&array_1[i + 0]),            \
+                                       vld1q_u64(&array_2[i + 0]));           \
+        n0 = vaddq_u16(n0, vpaddlq_u8(vcntq_u8(vreinterpretq_u8_u64(c0))));   \
+        uint64x2_t c1 = neon_intrinsic(vld1q_u64(&array_1[i + 2]),            \
+                                       vld1q_u64(&array_2[i + 2]));           \
+        n1 = vaddq_u16(n1, vpaddlq_u8(vcntq_u8(vreinterpretq_u8_u64(c1))));   \
+        uint64x2_t c2 = neon_intrinsic(vld1q_u64(&array_1[i + 4]),            \
+                                       vld1q_u64(&array_2[i + 4]));           \
+        n2 = vaddq_u16(n2, vpaddlq_u8(vcntq_u8(vreinterpretq_u8_u64(c2))));   \
+        uint64x2_t c3 = neon_intrinsic(vld1q_u64(&array_1[i + 6]),            \
+                                       vld1q_u64(&array_2[i + 6]));           \
+        n3 = vaddq_u16(n3, vpaddlq_u8(vcntq_u8(vreinterpretq_u8_u64(c3))));   \
+    }                                                                         \
+    uint64x2_t n = vdupq_n_u64(0);                                            \
+    n = vaddq_u64(n, vpaddlq_u32(vpaddlq_u16(n0)));                           \
+    n = vaddq_u64(n, vpaddlq_u32(vpaddlq_u16(n1)));                           \
+    n = vaddq_u64(n, vpaddlq_u32(vpaddlq_u16(n2)));                           \
+    n = vaddq_u64(n, vpaddlq_u32(vpaddlq_u16(n3)));                           \
+    return vgetq_lane_u64(n, 0) + vgetq_lane_u64(n, 1);                       \
+}
 
 #else /* not USEAVX  */
 
-#define BITSET_CONTAINER_FN(opname, opsymbol, avxintrinsic)               \
+#define BITSET_CONTAINER_FN(opname, opsymbol, avx_intrinsic, neon_intrinsic)  \
 int bitset_container_##opname(const bitset_container_t *src_1,            \
                               const bitset_container_t *src_2,            \
                               bitset_container_t *dst) {                  \
@@ -309,15 +420,15 @@ int bitset_container_##opname##_justcard(const bitset_container_t *src_1, \
 #endif
 
 // we duplicate the function because other containers use the "or" term, makes API more consistent
-BITSET_CONTAINER_FN(or, |, _mm256_or_si256)
-BITSET_CONTAINER_FN(union, |, _mm256_or_si256)
+BITSET_CONTAINER_FN(or,    |, _mm256_or_si256, vorrq_u64)
+BITSET_CONTAINER_FN(union, |, _mm256_or_si256, vorrq_u64)
 
 // we duplicate the function because other containers use the "intersection" term, makes API more consistent
-BITSET_CONTAINER_FN(and, &, _mm256_and_si256)
-BITSET_CONTAINER_FN(intersection, &, _mm256_and_si256)
+BITSET_CONTAINER_FN(and,          &, _mm256_and_si256, vandq_u64)
+BITSET_CONTAINER_FN(intersection, &, _mm256_and_si256, vandq_u64)
 
-BITSET_CONTAINER_FN(xor, ^, _mm256_xor_si256)
-BITSET_CONTAINER_FN(andnot, &~, _mm256_andnot_si256)
+BITSET_CONTAINER_FN(xor,    ^,  _mm256_xor_si256,    veorq_u64)
+BITSET_CONTAINER_FN(andnot, &~, _mm256_andnot_si256, vbicq_u64)
 // clang-format On
 
 
@@ -436,7 +547,7 @@ void* bitset_container_deserialize(const char *buf, size_t buf_len) {
   if((ptr = (bitset_container_t *)malloc(sizeof(bitset_container_t))) != NULL) {
     memcpy(ptr, buf, sizeof(bitset_container_t));
     // sizeof(__m256i) == 32
-    ptr->array = (uint64_t *) aligned_malloc(32, l);
+    ptr->array = (uint64_t *) roaring_bitmap_aligned_malloc(32, l);
     if (! ptr->array) {
         free(ptr);
         return NULL;
@@ -482,12 +593,26 @@ bool bitset_container_equals(const bitset_container_t *container1, const bitset_
 		if(container1->cardinality != container2->cardinality) {
 			return false;
 		}
+    if (container1->cardinality == INT32_C(0x10000)) {
+        return true;
+    }
 	}
-	for(int32_t i = 0; i < BITSET_CONTAINER_SIZE_IN_WORDS; ++i ) {
-		if(container1->array[i] != container2->array[i]) {
-			return false;
-		}
-	}
+#ifdef USEAVX
+  const __m256i *ptr1 = (const __m256i*)container1->array;
+  const __m256i *ptr2 = (const __m256i*)container2->array;
+  for (size_t i = 0; i < BITSET_CONTAINER_SIZE_IN_WORDS*sizeof(uint64_t)/32; i++) {
+      __m256i r1 = _mm256_load_si256(ptr1+i);
+      __m256i r2 = _mm256_load_si256(ptr2+i);
+      int mask = _mm256_movemask_epi8(_mm256_cmpeq_epi8(r1, r2));
+      if ((uint32_t)mask != UINT32_MAX) {
+          return false;
+      }
+  }
+#else
+  return memcmp(container1->array,
+                container2->array,
+                BITSET_CONTAINER_SIZE_IN_WORDS*sizeof(uint64_t)) == 0;
+#endif
 	return true;
 }
 
@@ -564,19 +689,16 @@ uint16_t bitset_container_maximum(const bitset_container_t *container) {
 
 /* Returns the number of values equal or smaller than x */
 int bitset_container_rank(const bitset_container_t *container, uint16_t x) {
-  uint32_t x32 = x;
+  // credit: aqrit
   int sum = 0;
-  uint32_t k = 0;
-  for (; k + 63 <= x32; k += 64)  {
-    sum += hamming(container->array[k / 64]);
+  int i = 0;
+  for (int end = x / 64; i < end; i++){
+    sum += hamming(container->array[i]);
   }
-  // at this point, we have covered everything up to k, k not included.
-  // we have that k < x, but not so large that k+63<=x
-  // k is a power of 64
-  int bitsleft = x32 - k + 1;// will be in [0,64)
-  uint64_t leftoverword = container->array[k / 64];// k / 64 should be within scope
-  leftoverword = leftoverword & ((UINT64_C(1) << bitsleft) - 1);
-  sum += hamming(leftoverword);
+  uint64_t lastword = container->array[i];
+  uint64_t lastpos = UINT64_C(1) << (x % 64);
+  uint64_t mask = lastpos + lastpos - 1; // smear right
+  sum += hamming(lastword & mask);
   return sum;
 }
 

@@ -15,9 +15,13 @@ extern "C" {
 #define SERIALIZATION_ARRAY_UINT32 1
 #define SERIALIZATION_CONTAINER 2
 
+#define ROARING_FLAG_COW UINT8_C(0x1)
+#define ROARING_FLAG_FROZEN UINT8_C(0x2)
+
 enum {
     SERIAL_COOKIE_NO_RUNCONTAINER = 12346,
     SERIAL_COOKIE = 12347,
+    FROZEN_COOKIE = 13766,
     NO_OFFSET_THRESHOLD = 4
 };
 
@@ -37,6 +41,7 @@ typedef struct roaring_array_s {
     void **containers;
     uint16_t *keys;
     uint8_t *typecodes;
+    uint8_t flags;
 } roaring_array_t;
 
 /**
@@ -51,9 +56,9 @@ roaring_array_t *ra_create(void);
 bool ra_init_with_capacity(roaring_array_t *new_ra, uint32_t cap);
 
 /**
- * Initialize with default capacity
+ * Initialize with zero capacity
  */
-bool ra_init(roaring_array_t *t);
+void ra_init(roaring_array_t *t);
 
 /**
  * Copies this roaring array, we assume that dest is not initialized
@@ -205,6 +210,8 @@ inline void ra_replace_key_and_container_at_index(roaring_array_t *ra,
 
 // write set bits to an array
 void ra_to_uint32_array(const roaring_array_t *ra, uint32_t *ans);
+
+bool ra_range_uint32_array(const roaring_array_t *ra, size_t offset, size_t limit, uint32_t *ans);
 
 /**
  * write a bitmap to a buffer. This is meant to be compatible with

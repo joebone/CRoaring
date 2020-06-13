@@ -16,12 +16,12 @@ extern inline int array_container_rank(const array_container_t *arr,
                                        uint16_t x);
 extern inline bool array_container_contains(const array_container_t *arr,
                                             uint16_t pos);
-extern int array_container_cardinality(const array_container_t *array);
-extern bool array_container_nonzero_cardinality(const array_container_t *array);
-extern void array_container_clear(array_container_t *array);
-extern int32_t array_container_serialized_size_in_bytes(int32_t card);
-extern bool array_container_empty(const array_container_t *array);
-extern bool array_container_full(const array_container_t *array);
+extern inline int array_container_cardinality(const array_container_t *array);
+extern inline bool array_container_nonzero_cardinality(const array_container_t *array);
+extern inline void array_container_clear(array_container_t *array);
+extern inline int32_t array_container_serialized_size_in_bytes(int32_t card);
+extern inline bool array_container_empty(const array_container_t *array);
+extern inline bool array_container_full(const array_container_t *array);
 
 /* Create a new array with capacity size. Return NULL in case of failure. */
 array_container_t *array_container_create_given_capacity(int32_t size) {
@@ -186,9 +186,15 @@ void array_container_andnot(const array_container_t *array_1,
     if (out->capacity < array_1->cardinality)
         array_container_grow(out, array_1->cardinality, false);
 #ifdef ROARING_VECTOR_OPERATIONS_ENABLED
-    out->cardinality =
-        difference_vector16(array_1->array, array_1->cardinality,
+    if((out != array_1) && (out != array_2)) {
+      out->cardinality =
+          difference_vector16(array_1->array, array_1->cardinality,
                             array_2->array, array_2->cardinality, out->array);
+     } else {
+      out->cardinality =
+        difference_uint16(array_1->array, array_1->cardinality, array_2->array,
+                          array_2->cardinality, out->array);
+     }
 #else
     out->cardinality =
         difference_uint16(array_1->array, array_1->cardinality, array_2->array,
@@ -392,18 +398,6 @@ int32_t array_container_serialize(const array_container_t *container, char *buf)
 int32_t array_container_write(const array_container_t *container, char *buf) {
     memcpy(buf, container->array, container->cardinality * sizeof(uint16_t));
     return array_container_size_in_bytes(container);
-}
-
-bool array_container_equals(const array_container_t *container1,
-                            const array_container_t *container2) {
-    if (container1->cardinality != container2->cardinality) {
-        return false;
-    }
-    // could be vectorized:
-    for (int32_t i = 0; i < container1->cardinality; ++i) {
-        if (container1->array[i] != container2->array[i]) return false;
-    }
-    return true;
 }
 
 bool array_container_is_subset(const array_container_t *container1,

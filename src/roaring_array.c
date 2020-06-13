@@ -26,8 +26,6 @@ extern inline void ra_set_container_at_index(const roaring_array_t *ra,
                                              int32_t i, void *c,
                                              uint8_t typecode);
 
-#define INITIAL_CAPACITY 4
-
 static bool realloc_array(roaring_array_t *ra, int32_t new_capacity) {
     // because we combine the allocations, it is not possible to use realloc
     /*ra->keys =
@@ -76,12 +74,10 @@ if (!ra->keys || !ra->containers || !ra->typecodes) {
 
 bool ra_init_with_capacity(roaring_array_t *new_ra, uint32_t cap) {
     if (!new_ra) return false;
-    new_ra->keys = NULL;
-    new_ra->containers = NULL;
-    new_ra->typecodes = NULL;
+    ra_init(new_ra);
 
-    new_ra->allocation_size = cap;
-    new_ra->size = 0;
+    if (cap > INT32_MAX) { return false; }
+
     if(cap > 0) {
       void *bigalloc =
         malloc(cap * (sizeof(uint16_t) + sizeof(void *) + sizeof(uint8_t)));
@@ -89,6 +85,8 @@ bool ra_init_with_capacity(roaring_array_t *new_ra, uint32_t cap) {
       new_ra->containers = (void **)bigalloc;
       new_ra->keys = (uint16_t *)(new_ra->containers + cap);
       new_ra->typecodes = (uint8_t *)(new_ra->keys + cap);
+      // Narrowing is safe because of above check
+      new_ra->allocation_size = (int32_t)cap;
     }
     return true;
 }
@@ -103,8 +101,15 @@ int ra_shrink_to_fit(roaring_array_t *ra) {
     return savings;
 }
 
-bool ra_init(roaring_array_t *t) {
-    return ra_init_with_capacity(t, INITIAL_CAPACITY);
+void ra_init(roaring_array_t *new_ra) {
+    if (!new_ra) { return; }
+    new_ra->keys = NULL;
+    new_ra->containers = NULL;
+    new_ra->typecodes = NULL;
+
+    new_ra->allocation_size = 0;
+    new_ra->size = 0;
+    new_ra->flags = 0;
 }
 
 bool ra_copy(const roaring_array_t *source, roaring_array_t *dest,
@@ -342,7 +347,7 @@ void *ra_get_container(roaring_array_t *ra, uint16_t x, uint8_t *typecode) {
     return ra->containers[i];
 }
 
-extern void *ra_get_container_at_index(const roaring_array_t *ra, uint16_t i,
+extern inline void *ra_get_container_at_index(const roaring_array_t *ra, uint16_t i,
                                        uint8_t *typecode);
 
 void *ra_get_writable_container(roaring_array_t *ra, uint16_t x,
@@ -364,9 +369,9 @@ uint16_t ra_get_key_at_index(const roaring_array_t *ra, uint16_t i) {
     return ra->keys[i];
 }
 
-extern int32_t ra_get_index(const roaring_array_t *ra, uint16_t x);
+extern inline int32_t ra_get_index(const roaring_array_t *ra, uint16_t x);
 
-extern int32_t ra_advance_until(const roaring_array_t *ra, uint16_t x,
+extern inline int32_t ra_advance_until(const roaring_array_t *ra, uint16_t x,
                                 int32_t pos);
 
 // everything skipped over is freed
@@ -485,6 +490,85 @@ void ra_to_uint32_array(const roaring_array_t *ra, uint32_t *ans) {
             ((uint32_t)ra->keys[i]) << 16);
         ctr += num_added;
     }
+}
+
+bool ra_range_uint32_array(const roaring_array_t *ra, size_t offset, size_t limit, uint32_t *ans) {
+    size_t ctr = 0;
+    size_t dtr = 0;
+
+    size_t t_limit = 0;
+
+    bool first = false;
+    size_t first_skip = 0;
+
+    uint32_t *t_ans = NULL;
+    size_t cur_len = 0;
+
+    for (int i = 0; i < ra->size; ++i) {
+
+        const void *container = container_unwrap_shared(ra->containers[i], &ra->typecodes[i]);
+        switch (ra->typecodes[i]) {
+            case BITSET_CONTAINER_TYPE_CODE:
+                t_limit = ((const bitset_container_t *)container)->cardinality;
+                break;
+            case ARRAY_CONTAINER_TYPE_CODE:
+                t_limit = ((const array_container_t *)container)->cardinality;
+                break;
+            case RUN_CONTAINER_TYPE_CODE:
+                t_limit = run_container_cardinality((const run_container_t *)container);
+                break;
+        }
+        if (ctr + t_limit - 1 >= offset && ctr < offset + limit){
+            if (!first){
+                //first_skip = t_limit - (ctr + t_limit - offset);
+                first_skip = offset - ctr;
+                first = true;
+                t_ans = (uint32_t *)malloc(sizeof(*t_ans) * (first_skip + limit));
+                if(t_ans == NULL) {
+                  return false;
+                }
+                memset(t_ans, 0, sizeof(*t_ans) * (first_skip + limit)) ;
+                cur_len = first_skip + limit;
+            }
+            if (dtr + t_limit > cur_len){
+                uint32_t * append_ans = (uint32_t *)malloc(sizeof(*append_ans) * (cur_len + t_limit));
+                if(append_ans == NULL) {
+                  if(t_ans != NULL) free(t_ans);
+                  return false;
+                }
+                memset(append_ans, 0, sizeof(*append_ans) * (cur_len + t_limit));
+                cur_len = cur_len + t_limit;
+                memcpy(append_ans, t_ans, dtr * sizeof(uint32_t));
+                free(t_ans);
+                t_ans = append_ans;
+            }
+            switch (ra->typecodes[i]) {
+                case BITSET_CONTAINER_TYPE_CODE:
+                    container_to_uint32_array(
+                        t_ans + dtr, (const bitset_container_t *)container,  ra->typecodes[i],
+                        ((uint32_t)ra->keys[i]) << 16);
+                    break;
+                case ARRAY_CONTAINER_TYPE_CODE:
+                    container_to_uint32_array(
+                        t_ans + dtr, (const array_container_t *)container, ra->typecodes[i],
+                        ((uint32_t)ra->keys[i]) << 16);
+                    break;
+                case RUN_CONTAINER_TYPE_CODE:
+                    container_to_uint32_array(
+                        t_ans + dtr, (const run_container_t *)container, ra->typecodes[i],
+                        ((uint32_t)ra->keys[i]) << 16);
+                    break;
+            }
+            dtr += t_limit;
+        }
+        ctr += t_limit;
+        if (dtr-first_skip >= limit) break;
+    }
+    if(t_ans != NULL) {
+      memcpy(ans, t_ans+first_skip, limit * sizeof(uint32_t));
+      free(t_ans);
+    }
+    return true;
 }
 
 bool ra_has_run_container(const roaring_array_t *ra) {

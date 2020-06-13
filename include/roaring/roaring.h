@@ -15,13 +15,6 @@ extern "C" {
 
 typedef struct roaring_bitmap_s {
     roaring_array_t high_low_container;
-    bool copy_on_write; /* copy_on_write: whether you want to use copy-on-write
-                         (saves memory and avoids
-                         copies but needs more care in a threaded context).
-                         Most users should ignore this flag.
-                         Note: if you do turn this flag to 'true', enabling
-                         COW, then ensure that you do so for all of your bitmaps since
-                         interactions between bitmaps with and without COW is unsafe. */
 } roaring_bitmap_t;
 
 /**
@@ -46,6 +39,25 @@ roaring_bitmap_t *roaring_bitmap_create_with_capacity(uint32_t cap);
  * Creates a new bitmap from a pointer of uint32_t integers
  */
 roaring_bitmap_t *roaring_bitmap_of_ptr(size_t n_args, const uint32_t *vals);
+
+/*
+ * Whether you want to use copy-on-write.
+ * Saves memory and avoids copies but needs more care in a threaded context.
+ * Most users should ignore this flag.
+ * Note: if you do turn this flag to 'true', enabling COW,
+ * then ensure that you do so for all of your bitmaps since
+ * interactions between bitmaps with and without COW is unsafe.
+ */
+inline bool roaring_bitmap_get_copy_on_write(const roaring_bitmap_t* r) {
+    return r->high_low_container.flags & ROARING_FLAG_COW;
+}
+inline void roaring_bitmap_set_copy_on_write(roaring_bitmap_t* r, bool cow) {
+    if (cow) {
+        r->high_low_container.flags |= ROARING_FLAG_COW;
+    } else {
+        r->high_low_container.flags &= ~ROARING_FLAG_COW;
+    }
+}
 
 /**
  * Describe the inner structure of the bitmap.
@@ -229,7 +241,7 @@ void roaring_bitmap_andnot_inplace(roaring_bitmap_t *x1,
 /**
  * Frees the memory.
  */
-void roaring_bitmap_free(roaring_bitmap_t *r);
+void roaring_bitmap_free(const roaring_bitmap_t *r);
 
 /**
  * Add value n_args from pointer vals, faster than repeatedly calling
@@ -319,6 +331,12 @@ bool roaring_bitmap_contains_range(const roaring_bitmap_t *r, uint64_t range_sta
 uint64_t roaring_bitmap_get_cardinality(const roaring_bitmap_t *ra);
 
 /**
+ * Returns the number of elements in the range [range_start, range_end).
+ */
+uint64_t roaring_bitmap_range_cardinality(const roaring_bitmap_t *ra,
+                                          uint64_t range_start, uint64_t range_end);
+
+/**
 * Returns true if the bitmap is empty (cardinality is zero).
 */
 bool roaring_bitmap_is_empty(const roaring_bitmap_t *ra);
@@ -337,6 +355,18 @@ void roaring_bitmap_clear(roaring_bitmap_t *ra);
  *   * sizeof(uint32_t))
  */
 void roaring_bitmap_to_uint32_array(const roaring_bitmap_t *ra, uint32_t *ans);
+
+
+/**
+ * Convert the bitmap to an array from "offset" by "limit". Write the output to "ans".
+ * so, you can get data in paging.
+ * caller is responsible to ensure that there is enough memory
+ * allocated
+ * (e.g., ans = malloc(roaring_bitmap_get_cardinality(limit)
+ *   * sizeof(uint32_t))
+ * Return false in case of failure (e.g., insufficient memory)
+ */
+bool roaring_bitmap_range_uint32_array(const roaring_bitmap_t *ra, size_t offset, size_t limit, uint32_t *ans);
 
 /**
  *  Remove run-length encoding even when it is more space efficient
@@ -434,6 +464,51 @@ size_t roaring_bitmap_portable_size_in_bytes(const roaring_bitmap_t *ra);
  * https://github.com/RoaringBitmap/RoaringFormatSpec
  */
 size_t roaring_bitmap_portable_serialize(const roaring_bitmap_t *ra, char *buf);
+
+/*
+ * "Frozen" serialization format imitates memory layout of roaring_bitmap_t.
+ * Deserialized bitmap is a constant view of the underlying buffer.
+ * This significantly reduces amount of allocations and copying required during
+ * deserialization.
+ * It can be used with memory mapped files.
+ * Example can be found in benchmarks/frozen_benchmark.c
+ *
+ *         [#####] const roaring_bitmap_t *
+ *          | | |
+ *     +----+ | +-+
+ *     |      |   |
+ * [#####################################] underlying buffer
+ *
+ * Note that because frozen serialization format imitates C memory layout
+ * of roaring_bitmap_t, it is not fixed. It is different on big/little endian
+ * platforms and can be changed in future.
+ */
+
+/**
+ * Returns number of bytes required to serialize bitmap using frozen format.
+ */
+size_t roaring_bitmap_frozen_size_in_bytes(const roaring_bitmap_t *ra);
+
+/**
+ * Serializes bitmap using frozen format.
+ * Buffer size must be at least roaring_bitmap_frozen_size_in_bytes().
+ */
+void roaring_bitmap_frozen_serialize(const roaring_bitmap_t *ra, char *buf);
+
+/**
+ * Creates constant bitmap that is a view of a given buffer.
+ * Buffer must contain data previously written by roaring_bitmap_frozen_serialize(),
+ * and additionally its beginning must be aligned by 32 bytes.
+ * Length must be equal exactly to roaring_bitmap_frozen_size_in_bytes().
+ *
+ * On error, NULL is returned.
+ *
+ * Bitmap returned by this function can be used in all readonly contexts.
+ * Bitmap must be freed as usual, by calling roaring_bitmap_free().
+ * Underlying buffer must not be freed or modified while it backs any bitmaps.
+ */
+const roaring_bitmap_t *roaring_bitmap_frozen_view(const char *buf, size_t length);
+
 
 /**
  * Iterate over the bitmap elements. The function iterator is called once for
@@ -552,15 +627,22 @@ void roaring_bitmap_flip_inplace(roaring_bitmap_t *x1, uint64_t range_start,
                                  uint64_t range_end);
 
 /**
+ * Selects the element at index 'rank' where the smallest element is at index 0.
  * If the size of the roaring bitmap is strictly greater than rank, then this
-   function returns true and set element to the element of given rank.
+   function returns true and sets element to the element of given rank.
    Otherwise, it returns false.
  */
 bool roaring_bitmap_select(const roaring_bitmap_t *ra, uint32_t rank,
                            uint32_t *element);
 /**
 * roaring_bitmap_rank returns the number of integers that are smaller or equal
-* to x.
+* to x. Thus if x is the first element, this function will return 1. If
+* x is smaller than the smallest element, this function will return 0.
+*
+* The indexing convention differs between roaring_bitmap_select and
+* roaring_bitmap_rank: roaring_bitmap_select refers to the smallest value
+* as having index 0, whereas roaring_bitmap_rank returns 1 when ranking
+* the smallest value.
 */
 uint64_t roaring_bitmap_rank(const roaring_bitmap_t *bm, uint32_t x);
 
@@ -605,8 +687,6 @@ typedef struct roaring_uint32_iterator_s {
     int32_t in_container_index;  // for bitset and array container, this is out
                                  // index
     int32_t run_index;           // for run container, this points  at the run
-    uint32_t in_run_index;  // within a run, this is our index (points at the
-                            // end of the current run)
 
     uint32_t current_value;
     bool has_value;
@@ -624,19 +704,26 @@ typedef struct roaring_uint32_iterator_s {
 
 /**
 * Initialize an iterator object that can be used to iterate through the
-* values.  If there is a  value, then it->has_value is true.
-* The first value is in it->current_value. The iterator traverses the values
-* in increasing order.
+* values. If there is a  value, then this iterator points to the first value
+* and it->has_value is true. The value is in it->current_value.
 */
 void roaring_init_iterator(const roaring_bitmap_t *ra,
                            roaring_uint32_iterator_t *newit);
 
 /**
+* Initialize an iterator object that can be used to iterate through the
+* values. If there is a value, then this iterator points to the last value
+* and it->has_value is true. The value is in it->current_value.
+*/
+void roaring_init_iterator_last(const roaring_bitmap_t *ra,
+                                roaring_uint32_iterator_t *newit);
+
+/**
 * Create an iterator object that can be used to iterate through the
 * values. Caller is responsible for calling roaring_free_iterator.
-* The iterator is initialized. If there is a  value, then it->has_value is true.
-* The first value is in it->current_value. The iterator traverses the values
-* in increasing order.
+* The iterator is initialized. If there is a  value, then this iterator
+* points to the first value and it->has_value is true.
+* The value is in it->current_value.
 *
 * This function calls roaring_init_iterator.
 */
@@ -648,6 +735,13 @@ roaring_uint32_iterator_t *roaring_create_iterator(const roaring_bitmap_t *ra);
 * orders. For convenience, returns it->has_value.
 */
 bool roaring_advance_uint32_iterator(roaring_uint32_iterator_t *it);
+
+/**
+* Decrement the iterator. If there is a new value, then it->has_value is true.
+* The new value is in it->current_value. Values are traversed in decreasing
+* orders. For convenience, returns it->has_value.
+*/
+bool roaring_previous_uint32_iterator(roaring_uint32_iterator_t *it);
 
 /**
 * Move the iterator to the first value >= val. If there is a such a value, then it->has_value is true.

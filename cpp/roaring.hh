@@ -20,11 +20,7 @@ class Roaring {
      * Create an empty bitmap
      */
     Roaring() {
-        bool is_ok = ra_init(&roaring.high_low_container);
-        if (!is_ok) {
-            throw std::runtime_error("failed memory alloc in constructor");
-        }
-        roaring.copy_on_write = false;
+        ra_init(&roaring.high_low_container);
     }
 
     /**
@@ -40,25 +36,21 @@ class Roaring {
     Roaring(const Roaring &r) {
         bool is_ok =
             ra_copy(&r.roaring.high_low_container, &roaring.high_low_container,
-                    r.roaring.copy_on_write);
+                    roaring_bitmap_get_copy_on_write(&r.roaring));
         if (!is_ok) {
             throw std::runtime_error("failed memory alloc in constructor");
         }
-        roaring.copy_on_write = r.roaring.copy_on_write;
+        roaring_bitmap_set_copy_on_write(&roaring,
+            roaring_bitmap_get_copy_on_write(&r.roaring));
     }
 
     /**
      * Move constructor. The moved object remains valid, i.e.
      * all methods can still be called on it.
      */
-    Roaring(Roaring &&r) {
+    Roaring(Roaring &&r) noexcept {
         roaring = std::move(r.roaring);
-
-        // left the moved object in a valid state
-        bool is_ok = ra_init_with_capacity(&r.roaring.high_low_container, 1);
-        if (!is_ok) {
-            throw std::runtime_error("failed memory alloc in constructor");
-        }
+        ra_init(&r.roaring.high_low_container);
     }
 
     /**
@@ -67,10 +59,9 @@ class Roaring {
      * Passing a NULL point is unsafe.
      * the pointer to the C struct will be invalid after the call.
      */
-    Roaring(roaring_bitmap_t *s) {
+    Roaring(roaring_bitmap_t *s) noexcept {
         // steal the interior struct
         roaring.high_low_container = s->high_low_container;
-        roaring.copy_on_write = s->copy_on_write;
         // deallocate the old container
         free(s);
     }
@@ -171,11 +162,12 @@ class Roaring {
         ra_clear(&roaring.high_low_container);
         bool is_ok =
             ra_copy(&r.roaring.high_low_container, &roaring.high_low_container,
-                    r.roaring.copy_on_write);
+                    roaring_bitmap_get_copy_on_write(&r.roaring));
         if (!is_ok) {
             throw std::runtime_error("failed memory alloc in assignment");
         }
-        roaring.copy_on_write = r.roaring.copy_on_write;
+        roaring_bitmap_set_copy_on_write(&roaring,
+            roaring_bitmap_get_copy_on_write(&r.roaring));
         return *this;
     }
 
@@ -183,15 +175,10 @@ class Roaring {
      * Moves the content of the provided bitmap, and
      * discard the current content.
      */
-    Roaring &operator=(Roaring &&r) {
+    Roaring &operator=(Roaring &&r) noexcept {
         ra_clear(&roaring.high_low_container);
-
         roaring = std::move(r.roaring);
-        bool is_ok = ra_init_with_capacity(&r.roaring.high_low_container, 1);
-        if (!is_ok) {
-            throw std::runtime_error("failed memory alloc in assignment");
-        }
-
+        ra_init(&r.roaring.high_low_container);
         return *this;
     }
 
@@ -280,6 +267,13 @@ class Roaring {
     void toUint32Array(uint32_t *ans) const {
         roaring_bitmap_to_uint32_array(&roaring, ans);
     }
+    /**
+     * to int array with pagination
+     * 
+     */
+    void rangeUint32Array(uint32_t *ans, size_t offset, size_t limit) const {
+        roaring_bitmap_range_uint32_array(&roaring, offset, limit, ans);
+    }
 
     /**
      * Return true if the two bitmaps contain the same elements.
@@ -331,8 +325,10 @@ class Roaring {
     }
 
     /**
+     * Selects the value at index rnk in the bitmap, where the smallest value
+     * is at index 0.
      * If the size of the roaring bitmap is strictly greater than rank, then
-     * this function returns true and set element to the element of given rank.
+     * this function returns true and sets element to the element of given rank.
      *   Otherwise, it returns false.
      */
     bool select(uint32_t rnk, uint32_t *element) const {
@@ -394,6 +390,11 @@ class Roaring {
 
     /**
     * Returns the number of integers that are smaller or equal to x.
+    * Thus the rank of the smallest element is one.  If
+    * x is smaller than the smallest element, this function will return 0.
+    * The rank and select functions differ in convention: this function returns
+    * 1 when ranking the smallest value, but the select function returns the
+    * smallest value when using index 0.
     */
     uint64_t rank(uint32_t x) const { return roaring_bitmap_rank(&roaring, x); }
 
@@ -541,7 +542,9 @@ class Roaring {
     /**
      * Whether or not we apply copy and write.
      */
-    void setCopyOnWrite(bool val) { roaring.copy_on_write = val; }
+    void setCopyOnWrite(bool val) {
+        roaring_bitmap_set_copy_on_write(&roaring, val);
+    }
 
     /**
      * Print the content of the bitmap
@@ -576,7 +579,9 @@ class Roaring {
     /**
      * Whether or not copy and write is active.
      */
-    bool getCopyOnWrite() const { return roaring.copy_on_write; }
+    bool getCopyOnWrite() const {
+        return roaring_bitmap_get_copy_on_write(&roaring);
+    }
 
     /**
      * computes the logical or (union) between "n" bitmaps (referenced by a
@@ -684,6 +689,17 @@ class RoaringSetBitForwardIterator final {
         return orig;
     }
 
+    type_of_iterator& operator--() { // prefix --
+        roaring_previous_uint32_iterator(&i);
+        return *this;
+    }
+
+    type_of_iterator operator--(int) { // postfix --
+        RoaringSetBitForwardIterator orig(*this);
+        roaring_previous_uint32_iterator(&i);
+        return orig;
+    }
+
     bool operator==(const RoaringSetBitForwardIterator &o) const {
         return i.current_value == *o && i.has_value == o.i.has_value;
     }
@@ -703,16 +719,6 @@ class RoaringSetBitForwardIterator final {
             roaring_init_iterator(&parent.roaring, &i);
         }
     }
-
-    RoaringSetBitForwardIterator &operator=(
-        const RoaringSetBitForwardIterator &o) = default;
-    RoaringSetBitForwardIterator &operator=(RoaringSetBitForwardIterator &&o) =
-        default;
-
-    ~RoaringSetBitForwardIterator() = default;
-
-    RoaringSetBitForwardIterator(const RoaringSetBitForwardIterator &o)
-        : i(o.i) {}
 
     roaring_uint32_iterator_t i;
 };

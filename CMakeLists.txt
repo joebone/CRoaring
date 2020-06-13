@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 2.8)
-
+include(GNUInstallDirs)
 
 set(CMAKE_MACOSX_RPATH OFF)
 if (NOT CMAKE_BUILD_TYPE)
@@ -9,9 +9,15 @@ endif()
 
 project(RoaringBitmap)
 set(ROARING_LIB_NAME roaring)
+set(PROJECT_VERSION_MAJOR 0)
+set(PROJECT_VERSION_MINOR 2)
+set(PROJECT_VERSION_PATCH 66)
+set(ROARING_LIB_VERSION "0.2.66" CACHE STRING "Roaring library version")
+set(ROARING_LIB_SOVERSION "0" CACHE STRING "Roaring library soversion")
 
 option(ROARING_DISABLE_X64 "Forcefully disable x64 optimizations even if hardware supports it (this disables AVX) " OFF)
 option(ROARING_DISABLE_AVX "Forcefully disable AVX even if hardware supports it" OFF)
+option(ROARING_DISABLE_NEON "Forcefully disable NEON even if hardware supports it" OFF)
 option(ROARING_DISABLE_NATIVE "Forcefully disable -march optimizations" OFF)
 set(ROARING_ARCH "native" CACHE STRING "If ROARING_DISABLE_NATIVE is OFF, the architecture to optimize for (-march)")
 
@@ -26,6 +32,7 @@ SET(ROARING_DISABLE_NATIVE ON) # ARM platforms may not like -march=native
 endif()
 
 option(ROARING_BUILD_STATIC "Build a static library" OFF) # turning it on disables the production of a dynamic library
+option(ROARING_LINK_STATIC "Link executables (tests, benchmarks) statically" OFF)
 option(ROARING_BUILD_LTO "Build library with Link Time Optimization" OFF)
 option(ROARING_SANITIZE "Sanitize addresses" OFF)
 option(ENABLE_ROARING_TESTS "If OFF, disable unit tests altogether" ON)
@@ -71,12 +78,28 @@ MESSAGE( STATUS "CMAKE_SYSTEM_PROCESSOR: " ${CMAKE_SYSTEM_PROCESSOR})
 MESSAGE( STATUS "CMAKE_BUILD_TYPE: " ${CMAKE_BUILD_TYPE} ) # this tends to be "sticky" so you can remain unknowingly in debug mode
 MESSAGE( STATUS "ROARING_DISABLE_X64: " ${ROARING_DISABLE_X64} ) # options in cmake are "sticky" so old options can remain even if that is counterintuitive
 MESSAGE( STATUS "ROARING_DISABLE_AVX: " ${ROARING_DISABLE_AVX} ) # options in cmake are "sticky" so old options can remain even if that is counterintuitive
+MESSAGE( STATUS "ROARING_DISABLE_NEON: " ${ROARING_DISABLE_NEON} )
 MESSAGE( STATUS "ROARING_DISABLE_NATIVE: " ${ROARING_DISABLE_NATIVE} )
 MESSAGE( STATUS "ROARING_ARCH: " ${ROARING_ARCH} )
 MESSAGE( STATUS "ROARING_BUILD_STATIC: " ${ROARING_BUILD_STATIC} )
+MESSAGE( STATUS "ROARING_LINK_STATIC: " ${ROARING_LINK_STATIC} )
 MESSAGE( STATUS "ROARING_BUILD_LTO: " ${ROARING_BUILD_LTO} )
 MESSAGE( STATUS "ROARING_SANITIZE: " ${ROARING_SANITIZE} )
 MESSAGE( STATUS "CMAKE_C_COMPILER: " ${CMAKE_C_COMPILER} ) # important to know which compiler is used
 MESSAGE( STATUS "CMAKE_C_FLAGS: " ${CMAKE_C_FLAGS} ) # important to know the flags
 MESSAGE( STATUS "CMAKE_C_FLAGS_DEBUG: " ${CMAKE_C_FLAGS_DEBUG} )
 MESSAGE( STATUS "CMAKE_C_FLAGS_RELEASE: " ${CMAKE_C_FLAGS_RELEASE} )
+
+
+set(CPACK_PACKAGE_VENDOR "Daniel Lemire")
+set(CPACK_PACKAGE_CONTACT "lemire@gmail.com")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Roaring bitmaps in C")
+set(CPACK_PACKAGE_VERSION_MAJOR ${PROJECT_VERSION_MAJOR})
+set(CPACK_PACKAGE_VERSION_MINOR ${PROJECT_VERSION_MINOR})
+set(CPACK_PACKAGE_VERSION_PATCH ${PROJECT_VERSION_PATCH})
+set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE")
+set(CPACK_RESOURCE_FILE_README "${CMAKE_CURRENT_SOURCE_DIR}/README.md")
+
+set(CPACK_RPM_PACKAGE_LICENSE "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE")
+set(CPACK_SOURCE_GENERATOR "TGZ;ZIP")
+include(CPack)

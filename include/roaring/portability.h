@@ -28,7 +28,7 @@
 #endif
 
 
-#if defined(_MSC_VER) && !defined(__clang__) && !defined(_WIN64)
+#if defined(_MSC_VER) && !defined(__clang__) && !defined(_WIN64) && !defined(ROARING_ACK_32BIT)
 #pragma message( \
     "You appear to be attempting a 32-bit build under Visual Studio. We recommend a 64-bit build instead.")
 #endif
@@ -79,6 +79,13 @@
 /* Non-Microsoft C/C++-compatible compiler */
 #include <x86intrin.h>  // on some recent GCC, this will declare posix_memalign
 #endif
+#endif
+
+#if !defined(USENEON) && !defined(DISABLENEON) && defined(__ARM_NEON)
+#  define USENEON
+#endif
+#if defined(USENEON)
+#  include <arm_neon.h>
 #endif
 
 #ifndef _MSC_VER
@@ -140,14 +147,31 @@ static inline int __builtin_clzll(unsigned long long input_num) {
 }
 
 /* result might be undefined when input_num is zero */
+#ifdef USESSE4
+/* POPCNT support was added to processors around the release of SSE4.2 */
+/* USESSE4 flag guarantees POPCNT support */
 static inline int __builtin_popcountll(unsigned long long input_num) {
 #ifdef _WIN64  // highly recommended!!!
-    return (int)__popcnt64(input_num);
+	return (int)__popcnt64(input_num);
 #else  // if we must support 32-bit Windows
-    return (int)(__popcnt((uint32_t)input_num) +
-                 __popcnt((uint32_t)(input_num >> 32)));
+	return (int)(__popcnt((uint32_t)input_num) +
+		__popcnt((uint32_t)(input_num >> 32)));
 #endif
 }
+#else
+/* software implementation avoids POPCNT */
+static inline int __builtin_popcountll(unsigned long long input_num) {
+	const uint64_t m1 = 0x5555555555555555; //binary: 0101...
+	const uint64_t m2 = 0x3333333333333333; //binary: 00110011..
+	const uint64_t m4 = 0x0f0f0f0f0f0f0f0f; //binary:  4 zeros,  4 ones ...
+	const uint64_t h01 = 0x0101010101010101; //the sum of 256 to the power of 0,1,2,3...
+
+	input_num -= (input_num >> 1) & m1;
+	input_num = (input_num & m2) + ((input_num >> 2) & m2);
+	input_num = (input_num + (input_num >> 4)) & m4;
+	return (input_num * h01) >> 56;
+}
+#endif
 
 /* Use #define so this is effective even under /Ob0 (no inline) */
 #define __builtin_unreachable() __assume(0)
@@ -161,7 +185,7 @@ extern int posix_memalign(void **__memptr, size_t __alignment, size_t __size);
 #endif  //__cplusplus // C++ does not have a well defined signature
 
 // portable version of  posix_memalign
-static inline void *aligned_malloc(size_t alignment, size_t size) {
+static inline void *roaring_bitmap_aligned_malloc(size_t alignment, size_t size) {
     void *p;
 #ifdef _MSC_VER
     p = _aligned_malloc(size, alignment);
@@ -175,7 +199,7 @@ static inline void *aligned_malloc(size_t alignment, size_t size) {
     return p;
 }
 
-static inline void aligned_free(void *memblock) {
+static inline void roaring_bitmap_aligned_free(void *memblock) {
 #ifdef _MSC_VER
     _aligned_free(memblock);
 #elif defined(__MINGW32__) || defined(__MINGW64__)
